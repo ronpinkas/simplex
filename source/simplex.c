@@ -1,4 +1,8 @@
 /*
+ * $Id$
+ */
+
+/*
  * Copyright 2000 Ron Pinkas <ron@profit-master.com>
  * www - http://www.Profit-Master.com
  *
@@ -21,7 +25,6 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA (or visit
  * their web site at http://www.gnu.org/).
- *
  */
 
 #include <stdio.h>
@@ -29,9 +32,12 @@
 #include <string.h>
 #include <limits.h>
 
-/* These are NOT overidable (yet). */
+/* NOT overidable (yet). */
 #define MAX_MATCH 4
-#define TOKEN_SIZE 64
+
+#ifndef TOKEN_SIZE
+   #define TOKEN_SIZE 64
+#endif
 
 /* Language Definitions Readability. */
 #define SELF_CONTAINED_WORDS_ARE LEX_WORD const aSelfs[] =
@@ -53,20 +59,37 @@
 #define START_WITH(x) { x,
 #define END_WITH(x) x,
 #define STOP_IF_ONE_OF_THESE(x) x,
-#define AND_IGNORE_DELIMITERS(x) x,
+#define TEST_LEFT(x) x,
 #define AS_PAIR_TOKEN(x) x }
 #define STREAM_EXCEPTION( sPair, chrPair) \
         if( chrPair ) \
+        { \
            printf(  "Exception: %c for stream at: \"%s\"\n", chrPair, sPair ); \
+        } \
         else \
+        { \
            printf(  "Exception: <EOF> for stream at: \"%s\"\n", chrPair, sPair ); \
+        } \
 
 /* Pairs. */
-static char sPair[ 2048 ];
-static char cTerm;
-static BOOL bExclusive;
+#ifndef MAX_STREAM
+   #define MAX_STREAM 2048
+#endif
+#ifndef MAX_STREAM_STARTER
+   #define MAX_STREAM_STARTER 2
+#endif
+#ifndef MAX_STREAM_TERMINATOR
+   #define MAX_STREAM_TERMINATOR 2
+#endif
+#ifndef MAX_STREAM_EXCLUSIONS
+   #define MAX_STREAM_EXCLUSIONS 2
+#endif
+
+static char sPair[ MAX_STREAM ];
+static char * sStart, * sTerm;
 static char * sExclude;
-static int iPairToken;
+static BOOL   bTestLeft;
+static int iPairToken = 0;
 
 /* Self Contained Words. */
 static char sSelf[ TOKEN_SIZE ];
@@ -75,16 +98,16 @@ typedef struct _LEX_WORD
 {
    char  sWord[ TOKEN_SIZE ];
    int   iToken;
-} LEX_WORD;                    /* support structure for KEYS and WORDS */
+} LEX_WORD;                    /* support structure for KEYS and WORDS. */
 
 typedef struct _LEX_PAIR
 {
-   char  cStart;
-   char  cTerm;
-   char  sExclude[4];
-   BOOL  bExclusive;
+   char  sStart[MAX_STREAM_STARTER];
+   char  sTerm[MAX_STREAM_TERMINATOR];
+   char  sExclude[MAX_STREAM_EXCLUSIONS];
+   BOOL  bTestLeft;
    int   iToken;
-} LEX_PAIR;                    /* support structure for KEYS and WORDS */
+} LEX_PAIR;                    /* support structure for Streams (Pairs). */
 
 #ifdef __cplusplus
    typedef struct yy_buffer_state *YY_BUFFER_STATE;
@@ -107,20 +130,14 @@ typedef struct _LEX_PAIR
 #define ELEMENT_TOKEN(x) -1
 #define DEBUG_INFO(x)
 #define LEX_CASE(x)
-
-/*
- * Can be used to indicate how many chars needed to qualify as an abbreviation for Key Words.
- *
-#define LEX_ABBREVIATE_KEYS
-#define LEX_ABBREVIATE_WORDS
-*/
+#define STREAM_OPEN(x)
+#define STREAM_APPEND(x) sPair[ iPairLen++ ] = x
 
 #include SLX_RULES
 
 /* Declarations. */
 
 FILE *yyin;      /* currently yacc parsed file */
-
 
 extern void yyerror( char * ); /* parsing error management function */
 
@@ -147,12 +164,11 @@ extern YYSTYPE yylval;
 #define LEX_WORD_SIZE ( sizeof( LEX_WORD ) )
 #define LEX_PAIR_SIZE ( sizeof( LEX_PAIR ) )
 
-/* Using statics when we could use locals to eliminate Allocations and Deallocations each time the yylex is called and returns. */
+/* Using statics when we could use locals to eliminate Allocations and Deallocations each time yylex is called and returns. */
 
 /* Look ahead Tokens. */
 static int  iHold = 0;
 static int  aiHold[4];
-static char asHold[4][ TOKEN_SIZE ];
 
 /* Pre-Checked Tokens. */
 static int  iReturn = 0;
@@ -160,12 +176,12 @@ static int  aiReturn[4];
 
 /* Rules Support */
 static int  aiMatched[ MAX_MATCH ];
-static int  iMatched = 0;
+static unsigned int  iMatched = 0;
 static int  aiTentative[2] = { 0, 0 };
-static int  iTentative = 0;
+static unsigned int  iTentative = 0;
 static int  aiProspects[ 256 ];
-static int  iProspects = 0;
-static int  iFound = 0;
+static unsigned int  iProspects = 0;
+static unsigned int  iFound = 0;
 static int  iReduce = 0;
 
 /* yylex */
@@ -173,12 +189,13 @@ static char * tmpPtr;
 static char sToken[TOKEN_SIZE];
 static int  iLen = 0;
 static char chr, cPrev = 0;
-static int  iKey, iWord, iMatch, iRemove, iWordLen, iPush;
+static unsigned int  iMatch, iRemove, iWordLen, iPush, iLastToken = 0;
 static char szLexBuffer[ YY_BUF_SIZE ];
 static char * s_szBuffer;
 static int  iSize = 0;
 static int  iRet;
 static BOOL bTmp;
+static BOOL bIgnoreWords = FALSE;
 
 /* Lex emulation */
 char * yytext;
@@ -187,13 +204,23 @@ int yyleng;
 /* NewLine Support. */
 static BOOL bNewLine = TRUE, bStart = TRUE;
 
-static int iSelfs = (int) ( sizeof( aSelfs  ) / LEX_WORD_SIZE );
-static int iKeys  = (int) ( sizeof( aKeys   ) / LEX_WORD_SIZE );
-static int iWords = (int) ( sizeof( aWords  ) / LEX_WORD_SIZE );
-static int iRules = (int) ( sizeof( aiRules ) / LEX_RULE_SIZE );
-static int iPairs = (int) ( sizeof( aPairs  ) / LEX_PAIR_SIZE );
+static unsigned int iSelfs = (int) ( sizeof( aSelfs  ) / LEX_WORD_SIZE );
+static unsigned int iKeys  = (int) ( sizeof( aKeys   ) / LEX_WORD_SIZE );
+static unsigned int iWords = (int) ( sizeof( aWords  ) / LEX_WORD_SIZE );
+static unsigned int iRules = (int) ( sizeof( aiRules ) / LEX_RULE_SIZE );
+static unsigned int iPairs = (int) ( sizeof( aPairs  ) / LEX_PAIR_SIZE );
+
+typedef struct _TREE_NODE
+{
+   unsigned int iMin;
+   unsigned int iMax;
+} TREE_NODE;                    /* support structure for Streams (Pairs). */
+
+TREE_NODE aKeyNodes[256], aWordNodes[256];
 
 int Reduce( int iToken, BOOL bReal );
+
+static void GenTrees( void );
 
 /* --------------------------------------------------------------------------------- */
 
@@ -206,23 +233,12 @@ int Reduce( int iToken, BOOL bReal );
 #define IF_TOKEN_READY()  if( iReturn )
 #define IF_TOKEN_ON_HOLD()  if( iHold )
 #define REDUCE( x ) Reduce( (x), TRUE )
-#define RESET_LEX() { iLen = 0; iMatched = 0; iHold = 0; iReturn = 0; bNewLine = TRUE; bStart = TRUE; }
+#define RESET_LEX() { iLen = 0; iMatched = 0; iProspects = 0; iHold = 0; iReturn = 0; bNewLine = TRUE; bStart = TRUE; }
 #define FORCE_REDUCE() Reduce( 0, TRUE )
 
-#define HOLD_TOKEN(x, y) \
+#define HOLD_TOKEN(x) \
                       /* Last In, First Out */ \
                       { iRet = x ; aiHold[ iHold++ ] = iRet; \
-                        \
-                        if( y ) \
-                        { \
-                           strcpy( asHold[ iHold - 1 ], y ); \
-                        } \
-                        else \
-                        { \
-                           asHold[ iHold - 1 ][0] = '\0'; \
-                        } \
-                        \
-                        DEBUG_INFO( printf( "Placed on hold: %i Position %i Text: >%s<\n", iRet, iHold, asHold[ iHold - 1 ] ) ); \
                         DEBUG_INFO( printf("Now Holding %i Tokens: %i %i %i %i\n", iHold, aiHold[0], aiHold[1], aiHold[2], aiHold[3] ) ); \
                       }
 
@@ -249,23 +265,77 @@ int Reduce( int iToken, BOOL bReal );
             if( *tmpPtr )
 
 #define IF_BEGIN_PAIR(chr) \
-         {  register int iPair = 0;\
+         {\
+            register unsigned int iPair = 0, iStartLen; \
+            register unsigned char chrStart; \
+            unsigned int iLastPair = 0, iLastLen = 0; \
+            \
+            DEBUG_INFO( printf( "Checking %i Streams for %c At: >%s<\n", iPairs, chr, szBuffer - 1 ) ); \
             \
             while( iPair < iPairs ) \
             { \
-               if( chr == aPairs[iPair].cStart ) \
+               chrStart = LEX_CASE(chr);\
+               \
+               if( chrStart == aPairs[iPair].sStart[0] ) \
                { \
-                  /* Terminator to look for. */ \
-                  cTerm      =          aPairs[iPair].cTerm; \
-                  bExclusive =          aPairs[iPair].bExclusive; \
-                  sExclude   = (char *) aPairs[iPair].sExclude; \
-                  iPairToken =          aPairs[iPair].iToken; \
-                  break; \
+                  iStartLen = 1; \
+                  \
+                  if( aPairs[iPair].sStart[1] ) \
+                  { \
+                     chrStart = LEX_CASE( *szBuffer ); \
+                     \
+                     while( aPairs[iPair].sStart[iStartLen] ) \
+                     { \
+                        if( chrStart != aPairs[iPair].sStart[iStartLen] ) \
+                        { \
+                           break; \
+                        } \
+                        \
+                        iStartLen++; \
+                        \
+                        /* Peek at Next Character. */ \
+                        chrStart = LEX_CASE( *( szBuffer + iStartLen - 1 ) ); \
+                     } \
+                  } \
+                  \
+                  /* Match */ \
+                  if( aPairs[iPair].sStart[iStartLen] == '\0' ) \
+                  { \
+                     if( iStartLen > iLastLen ) \
+                     { \
+                        iLastPair = iPair + 1; \
+                        iLastLen  = iStartLen; \
+                     } \
+                  } \
                } \
                iPair++; \
             } \
-            bTmp = ( iPair < iPairs ); \
             \
+            bTmp = FALSE; \
+            \
+            if( iLastPair ) \
+            { \
+               iLastPair--; \
+               STREAM_OPEN( aPairs[iLastPair].sStart )\
+               { \
+                  bTmp = TRUE; \
+                  \
+                  /* Last charcter read. */\
+                  chr = chrStart; \
+                  \
+                  /* Moving to next postion after the Stream Start position. */ \
+                  szBuffer += ( iLastLen - 1 ); \
+                  \
+                  /* Terminator to look for. */ \
+                  sStart     = (char *) aPairs[iLastPair].sStart; \
+                  sTerm      = (char *) aPairs[iLastPair].sTerm; \
+                  sExclude   = (char *) aPairs[iLastPair].sExclude; \
+                  bTestLeft  =          aPairs[iLastPair].bTestLeft; \
+                  iPairToken =          aPairs[iLastPair].iToken; \
+                  \
+                  DEBUG_INFO( printf( "Looking for Stream Terminator: >%s< Exclusions >%s<\n", sTerm, sExclude ) ); \
+               } \
+            } \
          } \
          /* Begin New Pair. */ \
          if( bTmp )
@@ -275,8 +345,8 @@ int Reduce( int iToken, BOOL bReal );
             DEBUG_INFO( printf( "Checking %i Selfs for %c At: >%s<\n", iSelfs, chr, szBuffer - 1 ) ); \
             \
          {\
-            register int iSelf = 0, iSelfLen; \
-            register char chrSelf; \
+            register unsigned int iSelf = 0, iSelfLen; \
+            register unsigned char chrSelf; \
             \
             while( iSelf < iSelfs ) \
             { \
@@ -319,7 +389,7 @@ int Reduce( int iToken, BOOL bReal );
                      { \
                         DEBUG_INFO( printf( "Holding Self >%s<\n", sSelf ) ); \
                         \
-                        HOLD_TOKEN( aSelfs[iSelf].iToken, sSelf ); \
+                        HOLD_TOKEN( aSelfs[iSelf].iToken ); \
                         \
                         /* Terminate current token and check it. */ \
                         sToken[ iLen ] = '\0'; \
@@ -333,13 +403,31 @@ int Reduce( int iToken, BOOL bReal );
                      { \
                         DEBUG_INFO( printf( "Reducing Self >%s<\n", sSelf ) ); \
                         \
+                        bIgnoreWords = FALSE;\
+                        \
                         if( bNewLine )\
                         {\
                            bNewLine = FALSE;\
                            NEW_LINE_ACTION();\
                         }\
                         \
-                        RETURN_TOKEN( REDUCE( aSelfs[iSelf].iToken ), sSelf ); \
+                        if( aSelfs[iSelf].iToken < LEX_CUSTOM_ACTION ) \
+                        { \
+                           iRet = aSelfs[iSelf].iToken; \
+                           iRet = CUSTOM_ACTION( iRet ); \
+                           if( iRet ) \
+                           { \
+                              RETURN_TOKEN( REDUCE( iRet ), (char*) sSelf  ); \
+                           } \
+                           else \
+                           { \
+                              goto Start; \
+                           } \
+                        } \
+                        else \
+                        { \
+                           RETURN_TOKEN( REDUCE( aSelfs[iSelf].iToken ), (char*) sSelf ); \
+                        } \
                      } \
                   } \
                } \
@@ -413,10 +501,6 @@ int Reduce( int iToken, BOOL bReal );
             /* Last in First Out. */ \
             iHold--; \
             iRet = aiHold[iHold]; \
-            if( asHold[iHold] ) \
-            { \
-               strcpy( (char*) sToken, asHold[iHold] );\
-            } \
             \
             DEBUG_INFO( printf(  "Released %i Now Holding %i Tokens: %i %i %i %i\n", iRet, iHold, aiHold[0], aiHold[1], aiHold[2], aiHold[3] ) ); \
             \
@@ -433,12 +517,14 @@ int Reduce( int iToken, BOOL bReal );
                   aiReturn[ iReturn++ ] = aiMatched[ iMatch ]; \
                   iMatch++; \
                } \
-               iMatched = 0;\
+               /* Resetting */ \
+               iLen = 0; iMatched = 0; iProspects = 0; iHold = 0; bNewLine = TRUE; bStart = TRUE; \
                goto Start;\
             } \
             else if( iRet == -1 ) \
             { \
                RESET_LEX();\
+               DEBUG_INFO( printf(  "Returning: <EOF>\n" ) ); \
                return -1; \
             }\
             else if( iRet < 256 )\
@@ -446,10 +532,6 @@ int Reduce( int iToken, BOOL bReal );
                IF_NEWLINE( (char) iRet )\
                {\
                   bNewLine = TRUE;\
-               }\
-               else\
-               {\
-                  bNewLine = FALSE;\
                }\
             }\
             \
@@ -459,7 +541,7 @@ int Reduce( int iToken, BOOL bReal );
 
 #define LEX_RETURN(x, y) \
         \
-        if( x <= LEX_CUSTOM_ACTION ) \
+        if( x < LEX_CUSTOM_ACTION ) \
         { \
             CUSTOM_ACTION(x); \
             \
@@ -517,7 +599,7 @@ int Reduce( int iToken, BOOL bReal );
 
 #define SCAN_PROSPECTS()\
 {\
-   register int iScan = 0;\
+   register unsigned int iScan = 0;\
    \
    DEBUG_INFO( printf(  "Scaning %i Prospects for %i at Pos: %i\n", iProspects, iToken, iMatched ) ); \
    \
@@ -527,7 +609,6 @@ int Reduce( int iToken, BOOL bReal );
       if( aiRules[ aiProspects[iScan] ][ iMatched ] == iToken )\
       {\
          /* No more Tokens - Rule Match. */\
-\
          if( iMatched == MAX_MATCH - 1 || aiRules[ aiProspects[iScan] ][ iMatched + 1 ] == 0 )\
          {\
             iFound++;\
@@ -540,11 +621,18 @@ int Reduce( int iToken, BOOL bReal );
       }\
       else\
       {\
-         /* No longer a prospect. */\
-         REMOVE_PROSPECT(iScan);\
+         if( bReal )\
+         {\
+            /* No longer a prospect. */\
+            REMOVE_PROSPECT(iScan);\
 \
-         /* Has to continue without increasing the counter, because of side effect of REMOVE_PROSPECT(). */\
-         continue;\
+            /* Has to continue without increasing the counter, because of side effect of REMOVE_PROSPECT(). */\
+            continue;\
+         }\
+         else\
+         {\
+            iRemoved++;\
+         }\
       }\
 \
       iScan++;\
@@ -562,7 +650,7 @@ int Reduce( int iToken, BOOL bReal );
 
 #define SCAN_RULES()\
 {\
-   register int iScan = 0;\
+   register unsigned int iScan = 0;\
    \
    DEBUG_INFO( printf(  "Scaning %i Rules for %i at Pos: %i\n", iRules, iToken, iMatched ) ); \
    \
@@ -573,7 +661,6 @@ int Reduce( int iToken, BOOL bReal );
       /* No prospects means we only search 1st Token of Rules. */\
       if( aiRules[iScan][0] == iToken )\
       {\
-\
          /* No more Tokens - Rule Match. */\
          if( aiRules[iScan][1] == 0 )\
          {\
@@ -606,7 +693,6 @@ int Reduce( int iToken, BOOL bReal );
    {\
       /* iProspectNo is already Zero Based. */\
       aiProspects[ iRemove ] = aiProspects[ iRemove + 1 ];\
-\
       iRemove++;\
    }\
 }
@@ -616,9 +702,7 @@ int Reduce( int iToken, BOOL bReal );
     DEBUG_INFO( printf(  "Revert Or Giveup for %i After %i %i %i\n", iToken, aiMatched[0], aiMatched[1], aiMatched[2] ) );\
 \
    /* Have to push the unmatched Token first, so it will Pop LAST after the Left Shift of reverted Tokens. */\
-\
    /* Avoid infinite loop, don't push if this is the only Token, it will be returned instead. */\
-\
    /* iToken maybe ZERO indicating REDUCTION to be FORCED. */\
    if( iMatched && iToken )\
    {\
@@ -634,21 +718,18 @@ int Reduce( int iToken, BOOL bReal );
          DEBUG_INFO( printf(  "Reverting from %i to %i Shifting to Reductions: %i %i\n", iMatched, iTentative, aiTentative[0], aiTentative[1] ) );\
 \
          /* iTentative is Zero Based, iMatched is 1 Based, but iMatched not increased yet for the unmatched Token. */\
-\
          /* Shift unused Token[s] Left. */\
          PUSH_UN_MATCHED( iMatched - iTentative );\
       }\
 \
       /* Will put the Reductions back into the Hold Stack to support Recursive Rules. */\
       REDUCE_TENTATIVE();\
-\
       CLEAN_UP();\
    }\
    else\
    {\
       /* Will get rid of the 1st (Left) Token and will shift the unmatched Tokens 1 position to the left.\
          So we will start again with the First unmatched Token. */\
-\
       GIVE_UP();\
    }\
 }
@@ -675,7 +756,6 @@ int Reduce( int iToken, BOOL bReal );
       DEBUG_INFO( printf(  "Returning Tentative for %i Matches, Associate Left of %i %i %i\n", iTentative, aiMatched[0], aiMatched[1], aiMatched[2] ) );\
 \
       /* Can't have the last Item becuase we just failed a rule. */ \
-\
       if( aiMatched[ 2 ] )\
       {\
          aiReturn[ iReturn++ ] = aiMatched[ 2 ];\
@@ -696,6 +776,7 @@ int Reduce( int iToken, BOOL bReal );
       iPush--;\
       iMatched--;\
       PUSH_TOKEN( aiMatched[ iMatched ] );\
+      aiMatched[iMatched] = 0;\
    }\
 }
 
@@ -704,7 +785,7 @@ int Reduce( int iToken, BOOL bReal );
    aiHold[ iHold++ ] = iPushToken;\
 \
    /* We don't know what was the text value of this Token any more. */\
-   asHold[ iHold - 1 ][0] = '\0'; \
+   DEBUG_INFO( printf("Now Holding %i Tokens: %i %i %i %i\n", iHold, aiHold[0], aiHold[1], aiHold[2], aiHold[3] ) ); \
 }
 
 #define SAVE_TENTATIVE()\
@@ -712,6 +793,7 @@ int Reduce( int iToken, BOOL bReal );
    iTentative = iMatched;\
    aiTentative[1] = aiRules[ iReduce ][ MAX_MATCH + 1 ];\
    aiTentative[0] = aiRules[ iReduce ][ MAX_MATCH ];\
+   DEBUG_INFO( printf( "Saved Tentative for: %i\n", iTentative ) ); \
 }
 
 #define GIVE_UP()\
@@ -761,7 +843,6 @@ int Reduce( int iToken, BOOL bReal );
 #define REDUCE_RULE()\
 {\
    /* If Associate Left than don't push reduce, pass through. */\
-\
    if( aiRules[ iReduce ][ MAX_MATCH ] )\
    {\
       DEBUG_INFO( printf(  "Reducing: %i %i %i %i Shifting To: %i %i\n", aiMatched[0], aiMatched[1], aiMatched[2], aiMatched[3], aiRules[ iReduce ][ MAX_MATCH ], aiRules[ iReduce ][ MAX_MATCH + 1 ] ) );\
@@ -835,8 +916,9 @@ YY_DECL
 
        if( bStart )
        {
-         bStart = FALSE;
-         INIT_ACTION();
+          bStart = FALSE;
+          GenTrees()
+          INIT_ACTION();
        }
 
        YY_INPUT( (char*) szLexBuffer, iSize, YY_BUF_SIZE );
@@ -851,21 +933,22 @@ YY_DECL
        {
           if( iMatched )
           {
-              /* Returning Pending Rule Match Tokens without further tests. */ \
-              iMatch = 0; \
-              while( iMatch < iMatched ) \
-              { \
-                 DEBUG_INFO( printf(  "Returning Pending Match Tokens at: <EOF>\n" ) ); \
-                 \
-                 aiReturn[ iReturn++ ] = aiMatched[ iMatch ]; \
-                 iMatch++; \
-              } \
-              iMatched = 0;\
-              goto Start;\
+              /* Returning Pending Rule Match Tokens without further tests. */
+              iMatch = 0;
+              while( iMatch < iMatched )
+              {
+                 DEBUG_INFO( printf(  "Returning Pending Match Tokens at: <EOF>\n" ) );
+
+                 aiReturn[ iReturn++ ] = aiMatched[ iMatch ];
+                 iMatch++;
+              }
+              /* Resetting */
+              iLen = 0; iMatched = 0; iProspects = 0; iHold = 0; bNewLine = TRUE; bStart = TRUE;
+              goto Start;
           }
 
+          RESET_LEX();
           DEBUG_INFO( printf(  "Returning: <EOF>\n" ) );
-
           return -1;
        }
     }
@@ -877,158 +960,165 @@ YY_DECL
     {
         if ( iSize && *szBuffer )
         {
+            if( iPairToken )
+               goto ProcessStream;
+
             cPrev = chr;
 
             /* Get next character. */
             iSize--;
             chr = LEX_CASE(*szBuffer++) ;
 
-            //DEBUG_INFO( printf(  "Char: %c\n", chr ) );
-
             IF_OMMIT(chr)
             {
-                if ( iLen )
-                {
-                   /* Terminate current token and check it. */
-                   sToken[ iLen ] = '\0';
+               if ( iLen )
+               {
+                  /* Terminate current token and check it. */
+                  sToken[ iLen ] = '\0';
 
-                   DEBUG_INFO( printf(  "Token: \"%s\" Ommited: \'%c\'\n", sToken, chr ) );
+                  DEBUG_INFO( printf(  "Token: \"%s\" Ommited: \'%c\'\n", sToken, chr ) );
 
-                   goto CheckToken;
-                }
-                else
-                {
-                   continue;
-                }
+                  goto CheckToken;
+               }
+               else
+               {
+                  continue;
+               }
             }
 
             CHECK_SELF_CONTAINED(chr);
 
-            /* Soft Pair Terminator ? */
-            if ( cTerm && chr == cTerm )
-            {
-                /* Reset. */
-                cTerm = 0;
-
-                /* Terminate current token and check it. */
-                sToken[ iLen++ ] = chr;
-                sToken[ iLen ] = '\0';
-
-                DEBUG_INFO( printf(  "Pair at %c = %s\n", chr, sToken ) );
-
-                goto CheckToken;
-            }
-
-            //DEBUG_INFO( printf(  "Scaning Pairs >%s< for %c\n", szPairs1, chr ) );
-
             /* New Pair ? */
             IF_BEGIN_PAIR( chr )
             {
-                if( iLen )
-                {
-                    /* Resume here on next call. */
-                    szBuffer--;
-                    iSize++;
-                    cTerm = 0;
-                    /* So cPrev will remain intact. */
-                    chr = cPrev;
+               if( iLen )
+               {
+                  DEBUG_INFO( printf( "Holding Stream Mode: '%c' Buffer = >%s<\n", chr, szBuffer ) );
 
-                    DEBUG_INFO( printf(  "Pushed back: '%c' Buffer = >%s<\n", chr, szBuffer ) );
+                  /* Terminate and Check Token to the left. */
+                  sToken[ iLen ] = '\0';
 
-                    /* Terminate and Check Token to the left. */
-                    sToken[ iLen ] = '\0';
+                  DEBUG_INFO( printf(  "Token: \"%s\" before New Pair at: \'%c\'\n", sToken, chr ) );
 
-                    DEBUG_INFO( printf(  "Token: \"%s\" before New Pair at: \'%c\'\n", sToken, chr ) );
+                  goto CheckToken ;
+               }
 
-                    goto CheckToken ;
-                }
+               ProcessStream :
 
-                IF_BELONG_LEFT( chr )
-                {
-                    DEBUG_INFO( printf(  "Reducing Left '%c'\n", chr ) );
-                    cTerm = 0;
-                    RETURN_TOKEN( REDUCE( (int) chr ), NULL );
-                }
+               bIgnoreWords = FALSE;
 
-                /* Soft ? */
-                if ( bExclusive )
-                {
-                    {
-                        register int iPairLen = 0;
-                        register char chrPair;
+               if( bTestLeft )
+               {
+                  IF_BELONG_LEFT( chr )
+                  {
+                     DEBUG_INFO( printf(  "Reducing Left '%c'\n", chr ) );
+                     iPairToken = 0;
+                     RETURN_TOKEN( REDUCE( (int) chr ), NULL );
+                  }
+               }
 
-                        /* Look for the terminator. */
-                        while ( *szBuffer )
+               {  register int iPairLen = 0;
+                  register char chrPair;
+
+                  /* Look for the terminator. */
+                  while ( *szBuffer )
+                  {
+                     /* Next Character. */
+                     chrPair = *szBuffer++ ;
+
+                     /* Terminator ? */
+                     if( chrPair == sTerm[0] )
+                     {
+                        register int iTermLen = 1;
+
+                        if( sTerm[1] )
                         {
-                            /* Next Character. */
-                            chrPair = *szBuffer++ ;
+                           register char chrTerm = LEX_CASE( *szBuffer );
 
-                            //DEBUG_INFO( printf(  "Checking: '%c' in Exclusive Pair\n", chrPair ) );
+                           while( sTerm[iTermLen] )
+                           {
+                              if( chrTerm != sTerm[iTermLen] )
+                              {
+                                 /* Last charcter read. */
+                                 chr = chrTerm;
+                                 break;
+                              }
 
-                            /* Check if exception. */
-                            IF_ABORT_PAIR( chrPair )
-                            {
-                               sPair[ iPairLen ] = '\0';
+                              iTermLen++;
 
-                               STREAM_EXCEPTION( sPair, chrPair);
-
-                               /* Resetting. */
-                               cTerm = 0;
-
-                               /* Last charcter read. */
-                               chr = chrPair;
-
-                               goto on_error;
-                            }
-                            /* Terminator found. */
-                            else if( chrPair == cTerm )
-                            {
-                               sPair[ iPairLen ] = '\0';
-
-                               DEBUG_INFO( printf(  "Returning Pair = >%s<\n", sPair ) );
-
-                               /* Resetting. */
-                               cTerm = 0;
-
-                               /* Last charcter read. */
-                               chr = chrPair;
-
-                               if( bNewLine )
-                               {
-                                  bNewLine = FALSE;
-                                  NEW_LINE_ACTION();
-                               }
-
-                               /* LITERAL */
-                               RETURN_TOKEN( REDUCE( iPairToken ), NULL );
-                            }
-                            else
-                            {
-                               //DEBUG_INFO( printf(  "Adding %c to Pair Pos: %i\n", chrPair, iPairLen ) );
-
-                               /* Accumulating. */
-                               sPair[ iPairLen++ ] = chrPair;
-                            }
+                              /* Peek at Next Character. */ \
+                              chrTerm = LEX_CASE( *( szBuffer + iTermLen - 1 ) );
+                           }
                         }
-                    }
 
-                    /* EOF */
-                    STREAM_EXCEPTION( sPair, NULL );
+                        /* Match */ \
+                        if( sTerm[iTermLen] == '\0' ) \
+                        { \
+                           /* Moving to next postion after the Stream Terminator. */ \
+                           szBuffer += ( iTermLen - 1 ); \
 
-                    /* Resetting. */
-                    cTerm = 0;
+                           sPair[ iPairLen ] = '\0';
 
-                    goto on_error;
-                }
-                else
-                {
-                    DEBUG_INFO( printf(  "Opened Pair, looking for: %c\n", cTerm ) );
+                           DEBUG_INFO( printf(  "Returning Pair = >%s<\n", sPair ) );
 
-                    sToken[iLen++] = chr;
+                           if( bNewLine )
+                           {
+                              bNewLine = FALSE;
+                              NEW_LINE_ACTION();
+                           }
 
-                    /* Scan next charcter. */
-                    continue;
-                }
+                           /* Resetting. */
+                           iRet = iPairToken;
+                           iPairToken = 0;
+
+                           if( iRet < LEX_CUSTOM_ACTION )
+                           {
+                              iRet = CUSTOM_ACTION( iRet );
+                              if( iRet )
+                              {
+                                 RETURN_TOKEN( REDUCE( iRet ), NULL );
+                              }
+                              else
+                              {
+                                 goto Start;
+                              }
+                           }
+                           else
+                           {
+                              RETURN_TOKEN( REDUCE( iRet ), NULL );
+                           }
+                        }
+                     }
+
+                     /* Check if exception. */
+                     IF_ABORT_PAIR( chrPair )
+                     {
+                        sPair[ iPairLen ] = '\0';
+
+                        STREAM_EXCEPTION( sPair, chrPair);
+
+                        /* Resetting. */
+                        iPairToken = 0;
+
+                        /* Last charcter read. */
+                        chr = chrPair;
+
+                        goto Start;
+                     }
+                     else
+                     {
+                        STREAM_APPEND( chrPair );
+                     }
+                  }
+               }
+
+               /* EOF */
+               STREAM_EXCEPTION( sPair, NULL );
+
+               /* Resetting. */
+               iPairToken = 0;
+
+               goto Start;
             }
             /* End Pairs. */
 
@@ -1038,18 +1128,18 @@ YY_DECL
                 if( iLen )
                 {
                     /* Will return NewLine on next call. */
-                    HOLD_TOKEN(chr, NULL);
+                    HOLD_TOKEN( chr );
 
                     /* Terminate current token and check it. */
                     sToken[ iLen ] = '\0';
 
                     DEBUG_INFO( printf(  "Token: \"%s\" at <NewLine> Holding: \'%c\'\n", sToken, chr ) );
-
                     goto CheckToken;
                 }
                 else
                 {
                     DEBUG_INFO( printf(  "Reducing NewLine '%c'\n", chr ) );
+                    bIgnoreWords = FALSE;
                     bNewLine = TRUE;
                     RETURN_TOKEN( REDUCE( (int) chr ), NULL );
                 }
@@ -1071,7 +1161,7 @@ YY_DECL
                 if( iLen )
                 {
                     /* Will be rturned on next cycle. */
-                    HOLD_TOKEN(chr, NULL);
+                    HOLD_TOKEN( chr );
 
                     /* Terminate current token and check it. */
                     sToken[ iLen ] = '\0';
@@ -1083,6 +1173,8 @@ YY_DECL
                 else
                 {
                     DEBUG_INFO( printf(  "Reducing Delimiter: '%c'\n", chr ) );
+
+                    bIgnoreWords = FALSE;
 
                     if( bNewLine )
                     {
@@ -1096,8 +1188,6 @@ YY_DECL
 
             /* Acumulate and scan next Charcter. */
             sToken[ iLen++ ] = chr;
-
-            //DEBUG_INFO( printf(  "Added: %c\n", chr ) );
 
             continue;
         }
@@ -1115,7 +1205,7 @@ YY_DECL
                 if( iLen )
                 {
                    /* <EOF> */
-                   HOLD_TOKEN(-1, NULL);
+                   HOLD_TOKEN( -1 );
 
                    /* Terminate current token and check it. */
                    sToken[ iLen ] = '\0';
@@ -1131,68 +1221,116 @@ YY_DECL
             }
         }
 
-    on_error:
-        continue;
-
     CheckToken:
         {
-            #ifdef LEX_ABBREVIATE_KEYS
-               iWordLen = strlen( (char*) sToken );
-
-               if( iWordLen < LEX_ABBREVIATE_KEYS )
-               {
-                  iWordLen = LEX_ABBREVIATE_KEYS;
-               }
-            #endif
-
-            iKey = 0;
-            while ( bNewLine && iKey < iKeys )
-            {
-                //DEBUG_INFO( printf(  "Comparing: \"%s\" and \"%s\"\n", sToken, aTokens[iKey] ) );
-
-                #ifdef LEX_ABBREVIATE_KEYS
-                   if( strncmp( (char*) sToken, (char*)( aKeys[ iKey++ ].sWord ), iWordLen ) == 0 )
-                #else
-                   if( strcmp( (char*) sToken, (char*) ( aKeys[ iKey++ ].sWord ) ) == 0 )
-                #endif
-                {
-                    DEBUG_INFO( printf(  "Reducing Key Word: %s\n", (char*) sToken ) );
-
-                    bNewLine = FALSE;
-                    NEW_LINE_ACTION();
-
-                    RETURN_TOKEN( REDUCE( aKeys[ iKey - 1 ].iToken ), (char*) sToken );
-                }
-            }
+            unsigned int i, iMax;
 
             if( bNewLine )
             {
-               bNewLine = FALSE;
-               NEW_LINE_ACTION();
+               bIgnoreWords = FALSE;
+
+               #ifdef LEX_ABBREVIATE_KEYS
+                  iWordLen = iLen;
+
+                  if( iWordLen < LEX_ABBREVIATE_KEYS )
+                  {
+                     iWordLen = LEX_ABBREVIATE_KEYS;
+                  }
+               #endif
+
+               i = aKeyNodes[ (int) sToken[0] ].iMin;
+               iMax = aKeyNodes[ (int) sToken[0] ].iMax + 1;
+               DEBUG_INFO( printf(  "Scanning Keys for Token: %s at Positions: %i-%i\n", (char*) sToken, i, iMax -1 ) );
+
+               while ( i < iMax )
+               {
+                  #ifdef LEX_ABBREVIATE_KEYS
+                     if( strncmp( (char*) sToken, (char*)( aKeys[ i++ ].sWord ), iWordLen ) == 0 )
+                  #else
+                     if( strcmp( (char*) sToken, (char*) ( aKeys[ i++ ].sWord ) ) == 0 )
+                  #endif
+                  {
+                     DEBUG_INFO( printf(  "Reducing Key Word: %s\n", (char*) sToken ) );
+
+                     bNewLine = FALSE;
+                     NEW_LINE_ACTION();
+
+                     if( aKeys[ i - 1 ].iToken < LEX_CUSTOM_ACTION )
+                     {
+                        iRet = aKeys[ i - 1 ].iToken;
+                        iRet = CUSTOM_ACTION( iRet );
+                        if( iRet )
+                        {
+                           RETURN_TOKEN( REDUCE( iRet ), (char*) sToken  );
+                        }
+                        else
+                        {
+                           goto Start;
+                        }
+                     }
+                     else
+                     {
+                        RETURN_TOKEN( REDUCE( aKeys[ i - 1 ].iToken ), (char*) sToken );
+                     }
+                  }
+               }
+
+               if( bNewLine )
+               {
+                  bNewLine = FALSE;
+                  NEW_LINE_ACTION();
+               }
             }
 
-            #ifdef LEX_ABBREVIATE_WORDS
-               iWordLen = strlen( (char*) sToken );
-
-               if( iWordLen < LEX_ABBREVIATE_WORDS )
-               {
-                  iWordLen = LEX_ABBREVIATE_WORDS;
-               }
-            #endif
-
-            iWord = 0;
-            while ( iWord < iWords )
+            if( bIgnoreWords )
             {
-                #ifdef LEX_ABBREVIATE_WORDS
-                   if( strncmp( (char*) sToken, (char*) ( aWords[ iWord++ ].sWord ), iWordLen ) == 0 )
-                #else
-                   if( strcmp( (char*) sToken, (char*) ( aWords[ iWord++ ].sWord ) ) == 0 )
-                #endif
-                {
-                    DEBUG_INFO( printf(  "Reducing Word: %s\n", (char*) sToken ) );
+               DEBUG_INFO( printf(  "Skiped Words for Word: %s\n", (char*) sToken ) );
+               bIgnoreWords = FALSE;
+            }
+            else
+            {
+               #ifdef LEX_ABBREVIATE_WORDS
+                  iWordLen = iLen;
 
-                    RETURN_TOKEN( REDUCE( aWords[ iWord - 1 ].iToken ), (char*) sToken );
-                }
+                  if( iWordLen < LEX_ABBREVIATE_WORDS )
+                  {
+                     iWordLen = LEX_ABBREVIATE_WORDS;
+                  }
+               #endif
+
+               i = aWordNodes[ (int) sToken[0] ].iMin;
+               iMax = aWordNodes[ (int) sToken[0] ].iMax + 1;
+               DEBUG_INFO( printf(  "Scanning Words for Token: %s at Positions: %i-%i\n", (char*) sToken, i, iMax - 1 ) );
+
+               while ( i < iMax )
+               {
+                  #ifdef LEX_ABBREVIATE_WORDS
+                     if( strncmp( (char*) sToken, (char*) ( aWords[ i++ ].sWord ), iWordLen ) == 0 )
+                  #else
+                     if( strcmp( (char*) sToken, (char*) ( aWords[ i++ ].sWord ) ) == 0 )
+                  #endif
+                  {
+                     DEBUG_INFO( printf(  "Reducing Word: %s\n", (char*) sToken ) );
+
+                     if( aWords[ i - 1 ].iToken < LEX_CUSTOM_ACTION )
+                     {
+                        iRet = aWords[ i - 1 ].iToken;
+                        iRet = CUSTOM_ACTION( iRet );
+                        if( iRet )
+                        {
+                           RETURN_TOKEN( REDUCE( iRet ), (char*) sToken );
+                        }
+                        else
+                        {
+                           goto Start;
+                        }
+                     }
+                     else
+                     {
+                       RETURN_TOKEN( REDUCE( aWords[ i - 1 ].iToken ), (char*) sToken );
+                     }
+                  }
+               }
             }
 
             DEBUG_INFO( printf(  "Reducing Element: \"%s\"\n", (char*) sToken ) );
@@ -1207,11 +1345,15 @@ YY_DECL
 
 int Reduce( int iToken, BOOL bReal )
 {
+   int iRemoved = 0; /* Simulted Removed Prospects if bReal is FALSE. */
+
    /* The search rutine will "return" the number of Matches in iFound, number of Prospects in iProspects, and the last
       (and hopefuly only) Matched Rule No in iReduce. */
 
    if( iToken )
    {
+      iLastToken = iToken;
+
       DEBUG_INFO( printf(  "Checking Token: %i After %i %i %i at Pos: %i\n", iToken, aiMatched[0], aiMatched[1], aiMatched[2], iMatched ) );
 
       FIND_MATCH();
@@ -1227,7 +1369,7 @@ int Reduce( int iToken, BOOL bReal )
 
    if( ! bReal )
    {
-      return ( iFound || iProspects );
+      return ( iFound || ( iProspects - iRemoved ) );
    }
 
    DEBUG_INFO( printf(  "Found %i Rules and %i Prospects for Token %i After %i %i %i\n", iFound, iProspects, iToken, aiMatched[0], aiMatched[1], aiMatched[2] ) );
@@ -1252,7 +1394,6 @@ int Reduce( int iToken, BOOL bReal )
           if( iProspects )
           {
              /* Can't reduce yet, can't "bookmark" possible reduction either, must continue checking. */
-
              return 0;
           }
           else
@@ -1265,7 +1406,6 @@ int Reduce( int iToken, BOOL bReal )
           if( iProspects )
           {
              /* Can't reduce yet, "bookmark" possible reduction here, and continue checking. */
-
              SAVE_TENTATIVE();
 
              return 0;
@@ -1273,7 +1413,6 @@ int Reduce( int iToken, BOOL bReal )
           else
           {
              /* One Match and no additional Prospects - we can reduce. */
-
              REDUCE_RULE();
 
              return 0;
@@ -1283,7 +1422,6 @@ int Reduce( int iToken, BOOL bReal )
           if( iProspects )
           {
              /* Can't reduce yet, and can't "bookmark" possible reduction either, must continue checking. */
-
              return 0;
           }
           else
@@ -1338,5 +1476,59 @@ void * yy_bytes_buffer( char * pBuffer, int iBufSize )
 {
    s_szBuffer = pBuffer;
    iSize = iBufSize;
+
+   if( bStart )
+   {
+      bStart = FALSE;
+      GenTrees()
+      INIT_ACTION();
+   }
+
    return s_szBuffer;
+}
+
+static void GenTrees( void )
+{
+   register unsigned int i;
+   register unsigned char cIndex;
+
+   i = 0;
+   while( i < 256 )
+   {
+      aKeyNodes[i].iMin = 0;
+      aKeyNodes[i].iMax = 0;
+      aWordNodes[i].iMin = 0;
+      aWordNodes[i].iMax = 0;
+      i++;
+   }
+
+   i = 0;
+   while ( i < iKeys )
+   {
+      cIndex = aKeys[i].sWord[0];
+
+      if( aKeyNodes[ cIndex ].iMin == 0 )
+      {
+         aKeyNodes[ cIndex ].iMin = i;
+      }
+
+      aKeyNodes[ cIndex ].iMax = i;
+
+      i++;
+   }
+
+   i = 0;
+   while ( i < iWords )
+   {
+      cIndex = aWords[i].sWord[0];
+
+      if( aWordNodes[ cIndex ].iMin == 0 )
+      {
+         aWordNodes[ cIndex ].iMin = i;
+      }
+
+      aWordNodes[ cIndex ].iMax = i;
+
+      i++;
+   }
 }
