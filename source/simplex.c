@@ -8,13 +8,8 @@
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version, with one exception:
- *
- * The exception is that if you link this file with other files to produce
- * an executable, this does not by itself causes the resulting executable
- * to be covered by the GNU General Public License. Your use of that
- * executable is in no way restricted on account of linking this file.
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -22,9 +17,34 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA (or visit
- * their web site at http://www.gnu.org/).
+ * along with this software; see the file COPYING.  If not, write to
+ * the Free Software Foundation, Inc., 59 Temple Place, Suite 330,
+ * Boston, MA 02111-1307 USA (or visit the web site http://www.gnu.org/).
+ *
+ * As a special exception, the Harbour Project gives permission for
+ * additional uses of the text contained in its release of Harbour.
+ *
+ * The exception is that, if you link the Harbour libraries with other
+ * files to produce an executable, this does not by itself cause the
+ * resulting executable to be covered by the GNU General Public License.
+ * Your use of that executable is in no way restricted on account of
+ * linking the Harbour library code into it.
+ *
+ * This exception does not however invalidate any other reasons why
+ * the executable file might be covered by the GNU General Public License.
+ *
+ * This exception applies only to the code released by the Harbour
+ * Project under the name Harbour.  If you copy code from other
+ * Harbour Project or Free Software Foundation releases into a copy of
+ * Harbour, as the General Public License permits, the exception does
+ * not apply to the code that you add in this way.  To avoid misleading
+ * anyone as to the status of such modified files, you must delete
+ * this exception notice from them.
+ *
+ * If you write modifications of your own for Harbour, it is your choice
+ * whether to permit this exception to apply to your modifications.
+ * If you do not wish that, delete this exception notice.
+ *
  */
 
 #include <stdio.h>
@@ -128,6 +148,7 @@ typedef struct _LEX_PAIR
 #define LEX_CUSTOM_ACTION -65
 #define DONT_REDUCE 1024
 #define YY_BUF_SIZE 16384
+#define MAX_RULES   1024
 
 #define YY_INPUT( a, b, c )
 
@@ -142,8 +163,6 @@ typedef struct _LEX_PAIR
 #define LEX_CASE(x)
 #define STREAM_OPEN(x)
 #define STREAM_APPEND(x) sPair[ iPairLen++ ] = x
-#define KEYWORD_ACTION()
-#define WORD_ACTION()
 
 #include SLX_RULES
 
@@ -198,7 +217,7 @@ static int  iRet;
 static BOOL bTmp, bIgnoreWords = FALSE, bRecursive = FALSE;
 
 /* Lex emulation */
-char * yytext;
+char * yytext = (char *) sToken;
 int yyleng;
 
 /* NewLine Support. */
@@ -221,7 +240,7 @@ typedef struct _TREE_NODE
 } TREE_NODE;                    /* support structure for Streams (Pairs). */
 
 /* Indexing System. */
-static TREE_NODE aPairNodes[256], aSelfNodes[256], aKeyNodes[256], aWordNodes[256], aRuleNodes[1024];
+static TREE_NODE aPairNodes[256], aSelfNodes[256], aKeyNodes[256], aWordNodes[256], aRuleNodes[MAX_RULES];
 static char acOmmit[256], acNewLine[256];
 static int acReturn[256];
 
@@ -460,8 +479,10 @@ static int rulecmp( const void * pLeft, const void * pRight );
         \
         if( iRet ) \
         { \
-           INTERCEPT_ACTION(iRet); \
            DEBUG_INFO( printf(  "Returning: %i\n", iRet ) ); \
+           \
+           INTERCEPT_ACTION(iRet); \
+           \
            return iRet; \
         } \
         else \
@@ -497,18 +518,6 @@ YY_DECL
 
     if( iSize == 0 )
     {
-       /*
-       if( szLexBuffer == NULL )
-       {
-          szLexBuffer = malloc( YY_BUF_SIZE );
-       }
-
-       if( yytext == NULL )
-       {
-          yytext = malloc( YY_BUF_SIZE );
-       }
-       */
-
        if( bStart )
        {
           bStart = FALSE;
@@ -782,7 +791,7 @@ int SimpLex_GetNextToken( void )
                        NEW_LINE_ACTION();
                     }
 
-                    DEBUG_INFO( printf(  "Reducing Delimiter: '%c' As: %i\n", chr, iRet ) );
+                    DEBUG_INFO( printf(  "Reducing Delimiter: '%c' As: %i\n", chr, acReturn[(int)chr] ) );
                     return acReturn[(int)chr];
                 }
             }
@@ -894,10 +903,10 @@ int Reduce( int iToken )
       DEBUG_INFO( printf(  "Returning Dont Reduce %i\n", iLastToken ) );
       return iLastToken;
    }
-   else if( iToken == 0 )
+   else if( iToken <= 0 || iToken >= MAX_RULES )
    {
-      DEBUG_INFO( printf(  "Returning 0\n" ) );
-      return 0;
+      DEBUG_INFO( printf( "Passing through (out of range): %i\n", iToken ) );
+      return iToken;
    }
 
    iLastToken = iToken;
@@ -1357,8 +1366,6 @@ void SimpLex_CheckWords( void )
 
       bIgnoreWords = TRUE;
 
-      KEYWORD_ACTION()
-
       iRet = aCheck[ iTentative ].iToken;
       if( iRet < LEX_CUSTOM_ACTION )
       {
@@ -1377,8 +1384,10 @@ void SimpLex_CheckWords( void )
    void * yy_create_buffer( FILE * pFile, int iBufSize )
 #endif
 {
-   HB_SYMBOL_UNUSED( pFile );
-   HB_SYMBOL_UNUSED( iBufSize );
+   /* Avoid warning of unused symbols. */
+   (void) pFile;
+   (void) iBufSize;
+
    iSize = 0;
 
    #ifdef __cplusplus
@@ -1449,7 +1458,7 @@ static void GenTrees( void )
       i++;
    }
 
-   while( i < 1024 )
+   while( i < MAX_RULES )
    {
       aRuleNodes[i].iMin = -1;
       aRuleNodes[i].iMax = -1;
