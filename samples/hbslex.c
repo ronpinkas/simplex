@@ -13,8 +13,14 @@
 #define MAX_STREAM_TERMINATOR                       4 /* "])\n"   */
 #define MAX_STREAM_EXCLUSIONS                       2
 
-#define TOKEN_SIZE             HB_SYMBOL_NAME_LEN + 1
+#define TOKEN_SIZE             ( 65 > HB_SYMBOL_NAME_LEN + 1 ? 65 : HB_SYMBOL_NAME_LEN + 1 )
 
-#define SLX_RULES "harbour.slx"
+#define YY_BUF_SIZE HB_PP_STR_SIZE
+
+#ifdef OS_DOS_COMPATIBLE
+   #define SLX_RULES "..\source\compiler\harbour.slx"
+#else
+   #define SLX_RULES "../source/compiler/harbour.slx"
+#endif
 
 #include "simplex.c"

@@ -76,7 +76,14 @@
 
 /* NOTE: 02/08/2000 - maurilio.longo@libero.it, under OS/2 GCC I need to use relative paths in include command */
 /* this is relative to position of simplex.c in harbour source tree */
-#define SLX_RULES "../macro/macro.slx"
+#if ( defined(__XCC__) || defined(__LCC__) )
+   #define SLX_RULES "source/macro/macro.slx"
+#else
+   #ifdef OS_DOS_COMPATIBLE
+      #define SLX_RULES "..\source\macro\macro.slx"
+   #else
+      #define SLX_RULES "../source/macro/macro.slx"
+   #endif
+#endif
 
-/* this is relative to position of macroslx.c in harbour source tree */
-#include "../compiler/simplex.c"
+#include "simplex.c"
