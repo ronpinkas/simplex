@@ -14,13 +14,6 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version, with one exception:
  *
- * The exception is that if you link the Harbour Runtime Library (HRL)
- * and/or the Harbour Virtual Machine (HVM) with other files to produce
- * an executable, this does not by itself cause the resulting executable
- * to be covered by the GNU General Public License. Your use of that
- * executable is in no way restricted on account of linking the HRL
- * and/or HVM code into it.
- *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -49,19 +42,22 @@
    #define YY_BUF_SIZE HB_PP_STR_SIZE
 
 static int iTexts = 0, iCloseSquare = 0, iWantsEOL, iWantsEXP, iWantsID, iWantsVAR;
-static char * aTexts[ NUMERALS_PER_LINE ];
+static char *aTexts[ NUMERALS_PER_LINE ];
 static unsigned char iIdentifier = 0;
-static char* sIdOnHold;
+static char *sIdOnHold, *s_sLastBlock = NULL;
 
+char *     hb_comp_SLX_LastBlock( BOOL bReset );
 long       hb_comp_SLX_Hex2L( char* sHex );
 static int hb_comp_SLX_ElementToken( char* szToken, unsigned int iTokenLen );
 static int hb_comp_SLX_InterceptAction( int iRet, char *sToken );
-static int hb_comp_SLX_CustomAction( int x, int aiHold[], int *ptr_iHold, BOOL *ptr_bIgnoreWords, int iLastToken, char *sToken );
+static int hb_comp_SLX_CustomAction( int x, int aiHold[], int *ptr_iHold, BOOL *ptr_bIgnoreWords, int iLastToken, char *sToken, char *s_szBuffer );
 
 /* -----------------------------------------------------  Language Definitions. ---------------------------------------------------- */
 
 /* Delimiters. */
 ACCEPT_TOKEN_AND_DROP_DELIMITER_IF_ONE_OF_THESE( " \t" );
+
+#define HB_CHK_BLOCK    LEX_CUSTOM_ACTION - 1
 
 ACCEPT_TOKEN_AND_RETURN_DELIMITERS {
 				     LEX_DELIMITER( ',' ) AS_TOKEN( ',' ),
@@ -77,7 +73,7 @@ ACCEPT_TOKEN_AND_RETURN_DELIMITERS {
 				     LEX_DELIMITER( '<' ) AS_TOKEN( '<'   + DONT_REDUCE ),
 				     LEX_DELIMITER( '>' ) AS_TOKEN( '>'   + DONT_REDUCE ),
 				     LEX_DELIMITER( '!' ) AS_TOKEN( NOT   + DONT_REDUCE ),
-				     LEX_DELIMITER( '{' ) AS_TOKEN( '{'   + DONT_REDUCE ),
+				     LEX_DELIMITER( '{' ) AS_TOKEN( HB_CHK_BLOCK        ),
 				     LEX_DELIMITER( '|' ) AS_TOKEN( '|'   + DONT_REDUCE ),
 				     LEX_DELIMITER( '^' ) AS_TOKEN( POWER + DONT_REDUCE ),
 				     LEX_DELIMITER( '%' ) AS_TOKEN( '%'   + DONT_REDUCE ),
@@ -89,10 +85,10 @@ ACCEPT_TOKEN_AND_RETURN_DELIMITERS {
 				   };
 
 /* Custom Intermediate Token needed to be expanded. */
-#define HB_LIT_ACT      LEX_CUSTOM_ACTION - 1
-#define HB_NESTED_LIT   LEX_CUSTOM_ACTION - 2
-#define HB_QOUT_ACT     LEX_CUSTOM_ACTION - 3
-#define HB_RET_QOUT_LIT LEX_CUSTOM_ACTION - 4
+#define HB_LIT_ACT      LEX_CUSTOM_ACTION - 2
+#define HB_NESTED_LIT   LEX_CUSTOM_ACTION - 3
+#define HB_QOUT_ACT     LEX_CUSTOM_ACTION - 4
+#define HB_RET_QOUT_LIT LEX_CUSTOM_ACTION - 5
 
 /* Stream Pairs. */
 DEFINE_STREAM_AS_ONE_OF_THESE {
@@ -107,7 +103,7 @@ DEFINE_STREAM_AS_ONE_OF_THESE {
 
 START_NEW_LINE_IF_ONE_OF_THESE( "\n;" );
 
-#define HB_SELF         LEX_CUSTOM_ACTION - 5
+#define HB_SELF         LEX_CUSTOM_ACTION - 6
 
 SELF_CONTAINED_WORDS_ARE {
                            LEX_WORD( ".AND." ) AS_TOKEN( AND     + DONT_REDUCE ),
@@ -149,32 +145,32 @@ SELF_CONTAINED_WORDS_ARE {
 #define HB_WANTS_EXP     LEX_CUSTOM_ACTION - 2048
 
 /* When 2 identifiers are correct syntax like in class declaration, we have to temporarily store the 2nd identifier. */
-#define HB_ID_ON_HOLD  LEX_CUSTOM_ACTION - 6
+#define HB_ID_ON_HOLD  LEX_CUSTOM_ACTION - 7
 
-#define HB_MACRO_ERR   LEX_CUSTOM_ACTION - 7
+#define HB_MACRO_ERR   LEX_CUSTOM_ACTION - 8
 
-#define HB_INIT_PROC   LEX_CUSTOM_ACTION - 8
-#define HB_INIT_FUNC   LEX_CUSTOM_ACTION - 9
-#define HB_EXIT_PROC   LEX_CUSTOM_ACTION - 10
-#define HB_EXIT_FUNC   LEX_CUSTOM_ACTION - 11
-#define HB_STATIC_PROC LEX_CUSTOM_ACTION - 12
-#define HB_STATIC_FUNC LEX_CUSTOM_ACTION - 13
+#define HB_INIT_PROC   LEX_CUSTOM_ACTION - 9
+#define HB_INIT_FUNC   LEX_CUSTOM_ACTION - 10
+#define HB_EXIT_PROC   LEX_CUSTOM_ACTION - 11
+#define HB_EXIT_FUNC   LEX_CUSTOM_ACTION - 12
+#define HB_STATIC_PROC LEX_CUSTOM_ACTION - 13
+#define HB_STATIC_FUNC LEX_CUSTOM_ACTION - 14
 
-#define HB_DO_CASE_ID  LEX_CUSTOM_ACTION - 14
+#define HB_DO_CASE_ID  LEX_CUSTOM_ACTION - 15
 
-#define HB_DO_WHILE_ID   LEX_CUSTOM_ACTION - 15
-#define HB_DO_WHILE_WITH LEX_CUSTOM_ACTION - 16
+#define HB_DO_WHILE_ID   LEX_CUSTOM_ACTION - 16
+#define HB_DO_WHILE_WITH LEX_CUSTOM_ACTION - 17
 
-#define _WITH_ID_CR      LEX_CUSTOM_ACTION - 17
-#define _WITH_ID_SEMI    LEX_CUSTOM_ACTION - 18
+#define _WITH_ID_CR      LEX_CUSTOM_ACTION - 18
+#define _WITH_ID_SEMI    LEX_CUSTOM_ACTION - 19
 
-#define HB_IN            LEX_CUSTOM_ACTION - 19
-#define HB_STEP          LEX_CUSTOM_ACTION - 20
-#define HB_TO            LEX_CUSTOM_ACTION - 21
-#define HB_WITH          LEX_CUSTOM_ACTION - 22
+#define HB_IN            LEX_CUSTOM_ACTION - 20
+#define HB_STEP          LEX_CUSTOM_ACTION - 21
+#define HB_TO            LEX_CUSTOM_ACTION - 22
+#define HB_WITH          LEX_CUSTOM_ACTION - 23
 
 /* When reservered words are used as Identifier. */
-#define HB_IDENTIFIER    LEX_CUSTOM_ACTION - 23
+#define HB_IDENTIFIER    LEX_CUSTOM_ACTION - 24
 
 #define USE_KEYWORDS
 
@@ -272,7 +268,8 @@ LANGUAGE_WORDS_ARE {
                      LEX_WORD( "STEP"            		) AS_TOKEN( HB_STEP            ),
                      LEX_WORD( "TO"              		) AS_TOKEN( HB_TO              ),
                      LEX_WORD( "WITH"              		) AS_TOKEN( HB_WITH            ),
-                     LEX_WORD( "_FIELD"          		) AS_TOKEN( FIELD              )
+                     LEX_WORD( "_FIELD"          		) AS_TOKEN( FIELD              ),
+                     LEX_WORD( "_GET_"          		) AS_TOKEN( GET                )
                    };
 
 /* Intermediate Reductions when still ambigious or need further reductions. */
@@ -387,8 +384,11 @@ LANGUAGE_RULES_ARE {
                     IF_SEQUENCE_IS( OPTIONAL    , '@'         , 0      , 0          ) PASS_THROUGH(),
                     IF_SEQUENCE_IS( OPTIONAL    , 0           , 0      , 0          ) REDUCE_TO( HB_IDENTIFIER     , 0             ),
 
-                    IF_SEQUENCE_IS( PROCREQ     , '('         , 0      , 0          ) PASS_THROUGH(),
+                    IF_SEQUENCE_IS( PROCREQ     , '('         , 0      , 0          ) REDUCE_TO( PROCREQ + DONT_REDUCE, 0          ),
                     IF_SEQUENCE_IS( PROCREQ     , 0           , 0      , 0          ) REDUCE_TO( HB_IDENTIFIER     , 0             ),
+
+                    IF_SEQUENCE_IS( GET         , '('         , 0      , 0          ) REDUCE_TO( GET + DONT_REDUCE , 0             ),
+                    IF_SEQUENCE_IS( GET         , 0           , 0      , 0          ) REDUCE_TO( HB_IDENTIFIER     , 0             ),
 
                     IF_SEQUENCE_IS( NE1         , _LINE_      , 0      , 0          ) REDUCE_TO( LINE + DONT_REDUCE, 0             ),
                     IF_SEQUENCE_IS( _LINE_      , 0           , 0      , 0          ) REDUCE_TO( HB_IDENTIFIER     , 0             ),
@@ -397,7 +397,7 @@ LANGUAGE_RULES_ARE {
                     IF_SEQUENCE_IS( '&'         , '"'         , 0      , 0          ) REDUCE_TO( HB_MACRO_ERR      , 0             ),
                     IF_SEQUENCE_IS( '&'         , '['         , 0      , 0          ) REDUCE_TO( HB_MACRO_ERR      , 0             ),
 
-                    IF_SEQUENCE_IS( _QOUT_LIT , 0           , 0      , 0          ) REDUCE_TO( HB_RET_QOUT_LIT   , 0             )
+                    IF_SEQUENCE_IS( _QOUT_LIT   , 0           , 0      , 0          ) REDUCE_TO( HB_RET_QOUT_LIT   , 0             )
                    };
 
 /* -------------------------------------------------  End of Language Definitions. ------------------------------------------------ */
@@ -434,7 +434,7 @@ LANGUAGE_RULES_ARE {
    #define YY_INPUT( buf, result, max_size ) result = yy_lex_input( buf, max_size );
 
 #undef CUSTOM_ACTION
-   #define CUSTOM_ACTION(x) x = hb_comp_SLX_CustomAction( x, aiHold, &iHold, &bIgnoreWords, iLastToken, (char*) sToken )
+   #define CUSTOM_ACTION(x) x = hb_comp_SLX_CustomAction( x, aiHold, &iHold, &bIgnoreWords, iLastToken, (char*) sToken, s_szBuffer )
 
 #undef STREAM_EXCEPTION
    #define STREAM_EXCEPTION( sPair, cChar ) \
@@ -706,7 +706,7 @@ static int hb_comp_SLX_ElementToken( char* szToken, unsigned int iTokenLen )
       iRet += DONT_REDUCE;
    }
 
-   DEBUG_INFO( printf(  "Element \"%s\" is %i\n", sToken, iRet ) );
+   DEBUG_INFO( printf(  "Element \"%s\" is %i\n", szToken, iRet ) );
    return iRet;
 }
 
@@ -746,7 +746,7 @@ long hb_comp_SLX_Hex2L( char* sHex )
    return lSum;
 }
 
-int hb_comp_SLX_CustomAction( int x, int aiHold[], int *ptr_iHold, BOOL *ptr_bIgnoreWords, int iLastToken, char *sToken )
+int hb_comp_SLX_CustomAction( int x, int aiHold[], int *ptr_iHold, BOOL *ptr_bIgnoreWords, int iLastToken, char *sToken, char *s_szBuffer )
 {
    DEBUG_INFO( printf( "Custom Action for %i\n", x ) );
 
@@ -786,6 +786,60 @@ int hb_comp_SLX_CustomAction( int x, int aiHold[], int *ptr_iHold, BOOL *ptr_bIg
 	 iIdentifier++;
 	 DEBUG_INFO( printf( "HB_SELF, Primary Identifier %s Increased to: %i\n", "SELF", iIdentifier ) );
          return IDENTIFIER;
+
+      case HB_CHK_BLOCK :
+	 if( s_sLastBlock == NULL )
+	 {
+	    char *pTmp = (char *) s_szBuffer;
+
+	    /* Skip White Space. */
+	    while( *pTmp && ( *pTmp == ' ' || *pTmp == '\t' ) )
+	    {
+               pTmp++;
+	    }
+
+	    if( *pTmp == '|' )
+	    {
+	       unsigned int iBrackets = 1;
+	       char cTmp;
+	       BOOL bMacro = FALSE;
+
+               pTmp++;
+	       while( *pTmp )
+	       {
+		  if( *pTmp == '}' )
+		  {
+		     iBrackets--;
+		     if( iBrackets == 0 )
+		     {
+		        break;
+		     }
+		  }
+		  else if( *pTmp == '{' )
+		  {
+		     iBrackets++;
+		  }
+		  else if( *pTmp == '&' )
+		  {
+		     bMacro = TRUE;
+		  }
+
+                  pTmp++;
+	       }
+
+	       if( bMacro )
+	       {
+	          pTmp++;
+	          cTmp = *pTmp;
+	          *pTmp = '\0';
+
+	          s_sLastBlock = hb_compIdentifierNew( s_szBuffer - 1, TRUE );
+
+	          *pTmp = cTmp;
+	       }
+	    }
+	 }
+	 return '{' + DONT_REDUCE;
 
       case HB_LIT_ACT :
          yylval.string = hb_compIdentifierNew( sPair, TRUE );
@@ -946,4 +1000,17 @@ int yy_lex_input( char *buffer, int iBufferSize )
    HB_SYMBOL_UNUSED( iBufferSize );
 
    return hb_pp_Internal( hb_comp_bPPO ? hb_comp_yyppo : NULL, buffer );
+}
+
+char * hb_comp_SLX_LastBlock( BOOL bReset )
+{
+   if( bReset && s_sLastBlock )
+   {
+      /*
+      hb_xfree( s_sLastBlock );
+      */
+      s_sLastBlock = NULL;
+   }
+
+   return s_sLastBlock;
 }
