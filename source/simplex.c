@@ -3,8 +3,8 @@
  */
 
 /*
- * Copyright 2000 Ron Pinkas <ron@profit-master.com>
- * www - http://www.Profit-Master.com
+ * Copyright 2000 Ron Pinkas <ron@ronpinkas.com>
+ * www - http://www.ronpinkas.com
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
